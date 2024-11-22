@@ -6,193 +6,57 @@ import re
 import json
 from time import sleep
 from datetime import datetime
-from tqdm import tqdm
 import logging
+from typing import Optional, Dict, Any, List
 
-load_dotenv()
-
-# Add global constants at the top level, after imports
-MAX_TOKENS = 12000
-MIN_TOKENS = 1000  # Minimum tokens to try before failing
-MAX_CONTENT_LENGTH = MAX_TOKENS * 4
-def setup_logger():
-    """Set up logging with both file and console output"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(f'hdl_analysis_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
-            logging.StreamHandler()
-        ]
-    )
-    return logging.getLogger(__name__)
-
-logger = setup_logger()
-
-# Set up OpenAI client
-client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-
-def extract_technical_details(content):
-    """Extract technical details from HDL code"""
-    details = {
-        'ports': [],
-        'signals': [],
-        'generics': [],
-        'processes': 0,
-        'components': [],
-        'state_variables': [],
-        'clock_domains': set(),
-        'reset_signals': set(),
-    }
+class HDLAnalysis:
+    """Handles HDL code analysis using OpenAI API with MongoDB integration."""
     
-    try:
-        # Extract ports
-        port_matches = re.finditer(r'port\s*\((.*?)\)\s*;', content, re.DOTALL | re.IGNORECASE)
-        for match in port_matches:
-            port_list = match.group(1).split(';')
-            for port in port_list:
-                if ':' in port:
-                    port = port.strip()
-                    if port:
-                        details['ports'].append(port)
-
-        # Extract signals
-        signal_matches = re.finditer(r'signal\s+(\w+\s*:.*?);', content, re.DOTALL | re.IGNORECASE)
-        for match in signal_matches:
-            details['signals'].append(match.group(1).strip())
-
-        # Extract generics
-        generic_matches = re.finditer(r'generic\s*\((.*?)\)\s*;', content, re.DOTALL | re.IGNORECASE)
-        for match in generic_matches:
-            generic_list = match.group(1).split(';')
-            for generic in generic_list:
-                if ':' in generic:
-                    generic = generic.strip()
-                    if generic:
-                        details['generics'].append(generic)
-
-        # Count processes
-        details['processes'] = len(re.findall(r'\bprocess\b', content, re.IGNORECASE))
-
-        # Find components
-        component_matches = re.finditer(r'component\s+(\w+)\s+is', content, re.IGNORECASE)
-        for match in component_matches:
-            details['components'].append(match.group(1))
-
-        # Find potential state variables
-        state_matches = re.finditer(r'type\s+(\w+)\s+is\s*\((.*?)\)', content, re.DOTALL | re.IGNORECASE)
-        for match in state_matches:
-            details['state_variables'].append(f"{match.group(1)}: {match.group(2)}")
-
-        # Find clock domains
-        clock_matches = re.finditer(r'(rising|falling)_edge\s*\((\w+)\)', content, re.IGNORECASE)
-        for match in clock_matches:
-            details['clock_domains'].add(match.group(2))
-
-        # Find reset signals
-        reset_matches = re.finditer(r'\b(rst|reset|clr|clear)\w*\s*:', content, re.IGNORECASE)
-        for match in reset_matches:
-            details['reset_signals'].add(match.group(1))
-
-    except Exception as e:
-        logger.error(f"Error extracting technical details: {str(e)}")
-
-    # Convert sets to lists for JSON serialization
-    details['clock_domains'] = list(details['clock_domains'])
-    details['reset_signals'] = list(details['reset_signals'])
+    MAX_TOKENS = 16000  # Setting slightly below max to be safe
+    MIN_TOKENS = 1000   # Minimum tokens to maintain meaningful analysis
     
-    return details
+    def __init__(self, batch_size: int = 20, target_count: int = 250):
+        """Initialize connections and configurations."""
+        load_dotenv()
+        self.client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        self.mongo_client = MongoClient(os.getenv('DB_URI'))
+        self.db = self.mongo_client['hdl_database']
+        self.collection = self.db['hdl_codes']
+        self.logger = self._setup_logger()
+        self.batch_size = batch_size
+        self.target_count = target_count
+        self.stats = {
+            'total_attempts': 0,
+            'successful_analyses': 0,
+            'failed_analyses': 0,
+            'skipped_documents': 0,
+            'processed_count': 0
+        }
 
-def truncate_content(content, max_tokens=12000):
-    """Truncate content to stay within token limits while preserving important parts"""
-    # Split content into sections
-    sections = re.split(r'(entity|architecture|package)\s+', content, flags=re.IGNORECASE)
-    
-    # If no sections found, do basic truncation
-    if len(sections) <= 1:
-        return content[:max_tokens * 4]  # Rough estimate of 4 chars per token
+    def _setup_logger(self) -> logging.Logger:
+        """Configure logging system."""
+        log_filename = f'hdl_analysis_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+        formatter = logging.Formatter(
+            '%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
+        )
         
-    # Rebuild content with essential parts
-    truncated = ""
-    token_estimate = 0
-    
-    # Always include library declarations
-    lib_match = re.search(r'library.*?;(\s*use.*?;)*', content, re.IGNORECASE | re.DOTALL)
-    if lib_match:
-        truncated += lib_match.group(0) + "\n\n"
-        token_estimate += len(lib_match.group(0)) // 4
+        file_handler = logging.FileHandler(log_filename)
+        file_handler.setFormatter(formatter)
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
         
-    for i in range(1, len(sections), 2):
-        section_type = sections[i].lower()
-        section_content = sections[i + 1] if i + 1 < len(sections) else ""
+        logger = logging.getLogger(__name__)
+        logger.setLevel(logging.INFO)
+        logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
         
-        # Extract just the declaration and port/generic sections for entities
-        if section_type == 'entity':
-            entity_parts = re.split(r'(port|generic)\s+', section_content, flags=re.IGNORECASE)
-            if len(entity_parts) > 1:
-                truncated += f"entity {entity_parts[0]}"
-                # Add port and generic sections if they exist
-                for j in range(1, len(entity_parts), 2):
-                    section = entity_parts[j].lower()
-                    content = entity_parts[j + 1] if j + 1 < len(entity_parts) else ""
-                    if section in ('port', 'generic'):
-                        truncated += f"{section} {content}"
-                        if "end entity" not in content.lower():
-                            truncated += "\nend entity;\n\n"
-        
-        # For architecture, include declaration and key processes
-        elif section_type == 'architecture':
-            # Get the declaration
-            arch_parts = section_content.split('begin', 1)
-            if len(arch_parts) > 0:
-                truncated += f"architecture {arch_parts[0]}\nbegin\n"
-                
-                # Add key processes if they exist
-                if len(arch_parts) > 1:
-                    processes = re.findall(r'process\b.*?end\s+process', arch_parts[1], 
-                                        re.IGNORECASE | re.DOTALL)
-                    for process in processes[:2]:  # Include up to 2 processes
-                        truncated += f"\n{process}\n"
-                        
-                truncated += "\nend architecture;\n\n"
-        
-        # For packages, include declaration and type definitions
-        elif section_type == 'package':
-            pkg_parts = section_content.split('begin', 1)
-            if len(pkg_parts) > 0:
-                truncated += f"package {pkg_parts[0]}"
-                if len(pkg_parts) > 1:
-                    truncated += f"begin{pkg_parts[1][:1000]}"  # Limit package body
-                if "end package" not in truncated.lower():
-                    truncated += "\nend package;\n\n"
-        
-        # Check estimated token count
-        token_estimate = len(truncated) // 4
-        if token_estimate >= max_tokens:
-            break
-    
-    return truncated
+        logger.info("Starting new HDL analysis session")
+        return logger
 
-def analyze_hdl_code(doc, retry_count=3):
-    """Analyze HDL code using OpenAI API with retries"""
-    content = doc.get('content', '')
-    current_tokens = MAX_TOKENS
-    
-    if not content.strip():
-        logger.warning(f"Empty content for document {doc['_id']}")
-        return None
-
-    # Initial truncation
-    truncated_content = truncate_content(content, current_tokens)
-    
-    for attempt in range(retry_count):
-        try:
-            # Extract technical details first
-            tech_details = extract_technical_details(truncated_content)
-            
-            # Create a shorter prompt for large files
-            if len(truncated_content) > 5000:
-                system_prompt = """Analyze this HDL code and provide a JSON with:
+    def _get_system_prompt(self, content_length: int) -> str:
+        """Select appropriate prompt based on content length."""
+        if content_length > 5000:
+            return """Analyze this HDL code and provide a JSON with:
                 - component_type: [StateMachine/Counter/ALU/Package/Interface/Memory/Controller/Decoder/TestBench/Other]
                 - design_pattern: main pattern used
                 - complexity_level: 1-5
@@ -200,226 +64,273 @@ def analyze_hdl_code(doc, retry_count=3):
                 - interface_types: key interfaces
                 - key_features: main features
                 - ideal_prompt: prompt to generate similar code"""
-            else:
-                system_prompt = """You are an expert HDL code analyzer and prompt engineer. 
-                Analyze the HDL code and provide detailed information about its characteristics and how to generate it.
-                Your response should be in JSON format with the following fields:
-                - component_type: one of [StateMachine, Counter, ALU, Package, Interface, Memory, Controller, Decoder, TestBench, Other]
-                - design_pattern: main design pattern used
-                - complexity_level: number from 1-5
-                - primary_function: detailed description of main purpose
-                - interface_types: array of interface types used
-                - key_features: array of technical features
-                - implementation_details: array of important implementation choices
-                - design_considerations: array of important design decisions and trade-offs
-                - performance_characteristics: any timing or performance related aspects
-                - potential_applications: array of possible use cases
-                - ideal_prompt: a detailed prompt that could be used to generate this kind of HDL code
-                - prompt_keywords: array of important keywords that should be in the prompt
-                - design_constraints: any constraints that should be specified in the prompt
-                - suggested_modifications: potential improvements or variations"""
+        else:
+            return """You are an expert HDL code analyzer. 
+                Analyze the HDL code and provide detailed information in JSON format with fields:
+                - component_type, design_pattern, complexity_level, primary_function
+                - interface_types, key_features, implementation_details
+                - design_considerations, performance_characteristics
+                - potential_applications, ideal_prompt, prompt_keywords
+                - design_constraints, suggested_modifications"""
 
-            response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"""Analyze this HDL code and its technical details:
+    def _truncate_hdl(self, hdl_code: str) -> str:
+        """Intelligently truncate HDL code to fit token limits."""
+        sections = re.split(r'(entity|architecture|package)\s+', hdl_code, flags=re.IGNORECASE)
+        
+        if len(sections) <= 1:
+            return hdl_code[:self.MAX_TOKENS * 4]
+            
+        truncated = ""
+        
+        # Preserve library declarations
+        lib_match = re.search(r'library.*?;(\s*use.*?;)*', hdl_code, re.IGNORECASE | re.DOTALL)
+        if lib_match:
+            truncated += lib_match.group(0) + "\n\n"
+        
+        for i in range(1, len(sections), 2):
+            section_type = sections[i].lower()
+            section_content = sections[i + 1] if i + 1 < len(sections) else ""
+            
+            if section_type == 'entity':
+                entity_parts = re.split(r'(port|generic)\s+', section_content, flags=re.IGNORECASE)
+                if len(entity_parts) > 1:
+                    truncated += f"entity {entity_parts[0]}"
+                    for j in range(1, len(entity_parts), 2):
+                        if j + 1 < len(entity_parts) and entity_parts[j].lower() in ('port', 'generic'):
+                            truncated += f"{entity_parts[j]} {entity_parts[j+1]}"
+                            if "end entity" not in entity_parts[j+1].lower():
+                                truncated += "\nend entity;\n\n"
+            
+            elif section_type == 'architecture':
+                arch_parts = section_content.split('begin', 1)
+                if len(arch_parts) > 0:
+                    truncated += f"architecture {arch_parts[0]}\nbegin\n"
+                    if len(arch_parts) > 1:
+                        processes = re.findall(r'process\b.*?end\s+process', 
+                                            arch_parts[1], re.IGNORECASE | re.DOTALL)
+                        truncated += "\n".join(processes[:3])
+                    truncated += "\nend architecture;\n\n"
+            
+            elif section_type == 'package':
+                pkg_parts = section_content.split('begin', 1)
+                if len(pkg_parts) > 0:
+                    truncated += f"package {pkg_parts[0]}"
+                    if "end package" not in truncated.lower():
+                        truncated += "\nend package;\n\n"
+            
+            if len(truncated) > self.MAX_TOKENS * 3:
+                break
+        
+        return truncated
 
-Code:
-{truncated_content}
+    def get_unanalyzed_documents(self, last_id: Optional[str] = None) -> List[Dict]:
+        """Retrieve batch of unanalyzed documents from MongoDB."""
+        query = {
+            "$or": [
+                {"analysis": {"$exists": False}},
+                {"analysis": None}
+            ],
+            "processing_failed": {"$ne": True}
+        }
+        if last_id:
+            query["_id"] = {"$gt": last_id}
 
-Technical Details:
-{json.dumps(tech_details, indent=2)}"""}
-                ],
-                temperature=0.3,
-                max_tokens=1000
-            )
-            
-            result_text = response.choices[0].message.content
-            json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
-            
-            if not json_match:    
-                raise ValueError("No JSON found in response")
+        return list(self.collection.find(
+            query,
+            {"_id": 1, "content": 1}
+        ).limit(self.batch_size))
+
+    def analyze_hdl(self, hdl_code: str, doc_id: str, retry_count: int = 3) -> Optional[Dict[str, Any]]:
+        """Analyze HDL code using OpenAI API with token handling."""
+        if not hdl_code.strip():
+            self.logger.error(f"Empty HDL code for document {doc_id}")
+            return None
+
+        self.stats['total_attempts'] += 1
+        original_length = len(hdl_code)
+        current_content = hdl_code
+        
+        for attempt in range(retry_count):
+            try:
+                # Handle large content
+                if len(current_content) > self.MAX_TOKENS * 4:
+                    self.logger.info(f"Content too large ({len(current_content)} chars), truncating...")
+                    current_content = self._truncate_hdl(current_content)
+                    self.logger.info(f"Truncated to {len(current_content)} chars")
+
+                system_prompt = self._get_system_prompt(len(current_content))
                 
-            result = json.loads(json_match.group())
-            
-            # Add technical details and metadata
-            result['technical_details'] = tech_details
-            result['analysis_timestamp'] = datetime.utcnow().isoformat()
-            result['truncated'] = len(truncated_content) < len(content)
-            result['original_length'] = len(content)
-            result['analyzed_length'] = len(truncated_content)
-            result['truncation_ratio'] = len(truncated_content) / len(content)
-            
-            return result
-            
-        except Exception as e:
-            if 'context_length_exceeded' in str(e):
-                logger.warning(f"Context length exceeded at {current_tokens} tokens, reducing size...")
-                current_tokens = current_tokens // 2
+                response = self.client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Analyze this HDL code:\n\n{current_content}"}
+                    ],
+                    temperature=0.3,
+                    max_tokens=1000
+                )
+
+                result = json.loads(re.search(r'\{.*\}', response.choices[0].message.content, re.DOTALL).group())
+                result.update({
+                    'analysis_timestamp': datetime.utcnow().isoformat(),
+                    'content_length': len(current_content),
+                    'original_length': original_length,
+                    'was_truncated': len(current_content) < original_length
+                })
+
+                self.stats['successful_analyses'] += 1
+                return result
+
+            except Exception as e:
+                if 'context_length_exceeded' in str(e):
+                    if attempt < retry_count - 1:
+                        current_content = self._truncate_hdl(current_content)
+                        if len(current_content) < self.MIN_TOKENS:
+                            self.logger.error(f"Content too short after truncation for {doc_id}")
+                            break
+                        continue
+
+                if 'Rate limit' in str(e):
+                    wait_time = (attempt + 1) * 30
+                    self.logger.warning(f"Rate limit hit for {doc_id}, waiting {wait_time}s...")
+                    sleep(wait_time)
+                    continue
                 
-                # Check if we've hit minimum token limit
-                if current_tokens < MIN_TOKENS:
-                    logger.warning(f"Document {doc['_id']} too large even at minimum size")
-                    return None
-                    
-                # Try more aggressive truncation
-                truncated_content = truncate_content(truncated_content, current_tokens)
-                continue
+                if attempt < retry_count - 1:
+                    self.logger.warning(f"Attempt {attempt + 1} failed for {doc_id}: {str(e)}")
+                    sleep(5)
+                    continue
                 
-            elif 'Rate limit' in str(e):
-                wait_time = (attempt + 1) * 30
-                logger.warning(f"Rate limit hit, waiting {wait_time} seconds...")
-                sleep(wait_time)
-                continue
-                
-            elif attempt < retry_count - 1:
-                logger.warning(f"Attempt {attempt + 1} failed: {str(e)}, retrying...")
-                sleep(5)
-                continue
-                
-            else:
-                logger.error(f"All attempts failed for document {doc['_id']}: {str(e)}")
+                self.logger.error(f"Analysis failed for {doc_id} after {retry_count} attempts: {str(e)}")
+                self.stats['failed_analyses'] += 1
                 return None
 
+    def process_batch(self) -> None:
+        """Process a batch of documents from MongoDB."""
+        last_id = None
+        
+        while self.stats['processed_count'] < self.target_count:
+            try:
+                documents = self.get_unanalyzed_documents(last_id)
+                if not documents:
+                    self.logger.info("No more documents to process")
+                    break
 
-def process_documents(collection, target_count=250, batch_size=20):
-    """Process specified number of documents with cursor timeout handling and analysis check"""
-    processed_count = 0
-    success_count = 0
-    skipped_count = 0
-    last_id = None
-    
-    while processed_count < target_count:
-        try:
-            # Query with pagination using _id and check for existing analysis
-            query = {
-                "$or": [
-                    {"analysis": {"$exists": False}},
-                    {"analysis": None}
-                ],
-                "processing_failed": {"$ne": True}
-            }
-            if last_id:
-                query["_id"] = {"$gt": last_id}
-                
-            # Get current count of remaining documents
-            remaining_docs = collection.count_documents(query)
-            if remaining_docs == 0:
-                logger.info("No more unanalyzed documents to process")
-                break
-                
-            # Get a batch of documents
-            cursor = collection.find(
-                query,
-                {"_id": 1, "content": 1, "analysis": 1}
-            ).limit(batch_size)
-            
-            # Convert cursor to list immediately to avoid timeout
-            batch_docs = list(cursor)
-            
-            if not batch_docs:
-                logger.info("No more documents to process")
-                break
-                
-            # Process the batch
-            for doc in batch_docs:
-                try:
+                for doc in documents:
                     doc_id = doc['_id']
-                    last_id = doc_id  # Update last_id for pagination
-                    
-                    # Double check if document already has analysis
-                    if 'analysis' in doc and doc['analysis'] is not None:
-                        logger.info(f"Skipping already analyzed document {doc_id}")
-                        skipped_count += 1
-                        processed_count += 1
+                    last_id = doc_id
+
+                    # Check if already analyzed
+                    if self.collection.find_one({"_id": doc_id, "analysis": {"$exists": True}}):
+                        self.logger.info(f"Document {doc_id} already analyzed")
+                        self.stats['skipped_documents'] += 1
                         continue
-                    
-                    logger.info(f"Processing document {doc_id}")
-                    
-                    analysis = analyze_hdl_code(doc)
-                    
+
+                    self.logger.info(f"Processing document {doc_id}")
+                    analysis = self.analyze_hdl(doc.get('content', ''), str(doc_id))
+
                     if analysis:
-                        # Final check before update to prevent duplicate analysis
-                        existing = collection.find_one(
-                            {"_id": doc_id, "analysis": {"$exists": True}},
-                            {"_id": 1}
-                        )
-                        
-                        if existing:
-                            logger.info(f"Document {doc_id} was analyzed by another process")
-                            skipped_count += 1
-                        else:
-                            collection.update_one(
-                                {"_id": doc_id},
-                                {
-                                    "$set": {
-                                        "analysis": analysis,
-                                        "analysis_timestamp": datetime.utcnow()
-                                    }
+                        self.collection.update_one(
+                            {"_id": doc_id},
+                            {
+                                "$set": {
+                                    "analysis": analysis,
+                                    "analysis_timestamp": datetime.utcnow()
                                 }
-                            )
-                            success_count += 1
-                            logger.info(f"Successfully analyzed document {doc_id}")
+                            }
+                        )
+                        self.logger.info(f"Successfully analyzed document {doc_id}")
                     else:
-                        logger.warning(f"Failed to analyze document {doc_id}")
-                        collection.update_one(
+                        self.collection.update_one(
                             {"_id": doc_id},
                             {"$set": {"processing_failed": True}}
                         )
+                        self.logger.warning(f"Failed to analyze document {doc_id}")
+
+                    self.stats['processed_count'] += 1
                     
-                    processed_count += 1
-                    
-                    # Save progress summary every 10 documents
-                    if processed_count % 10 == 0:
-                        progress_summary = {
-                            "processed": processed_count,
-                            "successful": success_count,
-                            "skipped": skipped_count,
-                            "last_id": str(last_id),
-                            "timestamp": datetime.utcnow().isoformat()
-                        }
-                        with open('analysis_progress.json', 'w') as f:
-                            json.dump(progress_summary, f, indent=2)
-                        
-                        logger.info(f"Progress: {processed_count} processed, {success_count} successful, {skipped_count} skipped")
-                    
-                    # Rate limiting pause every 50 requests
-                    if processed_count % 50 == 0:
-                        logger.info("Taking a short break to avoid rate limits...")
+                    # Save progress
+                    if self.stats['processed_count'] % 10 == 0:
+                        self._save_progress(last_id)
+                        self.log_stats()
+
+                    # Rate limiting
+                    if self.stats['processed_count'] % 50 == 0:
+                        self.logger.info("Taking a break to avoid rate limits...")
                         sleep(10)
-                    
-                    # Check if we've hit the target
-                    if processed_count >= target_count:
+
+                    if self.stats['processed_count'] >= self.target_count:
                         break
-                        
-                except Exception as e:
-                    logger.error(f"Error processing document {doc_id}: {str(e)}")
-                    continue
+
+            except Exception as e:
+                self.logger.error(f"Batch processing error: {str(e)}")
+                sleep(5)
+
+    def _save_progress(self, last_id: str) -> None:
+        """Save current progress to file."""
+        progress = {
+            **self.stats,
+            "last_id": str(last_id),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        with open('analysis_progress.json', 'w') as f:
+            json.dump(progress, f, indent=2)
+
+    def log_stats(self) -> None:
+        """Log current statistics."""
+        self.logger.info("Current Statistics:")
+        for key, value in self.stats.items():
+            self.logger.info(f"{key.replace('_', ' ').title()}: {value}")
+
+    def run(self) -> None:
+        """Main execution method."""
+        try:
+            # Load existing progress
+            try:
+                with open('analysis_progress.json', 'r') as f:
+                    progress = json.load(f)
+                    self.stats['processed_count'] = progress.get('processed_count', 0)
+                    remaining = self.target_count - self.stats['processed_count']
+                    if remaining > 0:
+                        self.logger.info(f"Resuming from previous run. {remaining} documents remaining.")
+                        self.target_count = remaining
+                    else:
+                        self.logger.info("Previous run completed.")
+                        return
+            except FileNotFoundError:
+                self.logger.info("Starting new processing run...")
+
+            self.process_batch()
+            self.log_stats()
             
         except Exception as e:
-            logger.error(f"Batch processing error: {str(e)}")
-            # Wait before retrying
-            sleep(5)
-            continue
-    
-    logger.info(f"\nProcessing complete.")
-    logger.info(f"Processed: {processed_count}")
-    logger.info(f"Successful: {success_count}")
-    logger.info(f"Skipped: {skipped_count}")
-    return success_count
+            self.logger.error(f"Fatal error: {str(e)}")
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        """Cleanup and close connections."""
+        if self.mongo_client:
+            self.mongo_client.close()
+            self.logger.info("MongoDB connection closed")
+        self.logger.info("HDL Analysis session completed")
+
 def main():
+    """Main execution function for HDL Analysis."""
     try:
-        logger.info("Connecting to MongoDB...")
-        client = MongoClient(os.getenv('DB_URI'))
-        db = client['hdl_database']
-        collection = db['hdl_codes']
+        print("\n=== Starting HDL Code Analysis System ===\n")
         
-        # Get current counts
-        total_docs = collection.count_documents({})
-        analyzed_docs = collection.count_documents({"analysis": {"$exists": True}})
-        failed_docs = collection.count_documents({"processing_failed": True})
-        remaining_docs = collection.count_documents({
+        # Initialize the analyzer
+        analyzer = HDLAnalysis(
+            batch_size=20,     # Process 20 documents at a time
+            target_count=250   # Process total of 250 documents
+        )
+        
+        # Print initial MongoDB status
+        total_docs = analyzer.collection.count_documents({})
+        analyzed_docs = analyzer.collection.count_documents({"analysis": {"$exists": True}})
+        failed_docs = analyzer.collection.count_documents({"processing_failed": True})
+        remaining_docs = analyzer.collection.count_documents({
             "$or": [
                 {"analysis": {"$exists": False}},
                 {"analysis": None}
@@ -427,39 +338,24 @@ def main():
             "processing_failed": {"$ne": True}
         })
         
-        logger.info(f"Database status:")
-        logger.info(f"Total documents: {total_docs}")
-        logger.info(f"Already analyzed: {analyzed_docs}")
-        logger.info(f"Failed documents: {failed_docs}")
-        logger.info(f"Remaining to analyze: {remaining_docs}")
+        print(f"Database Status:")
+        print(f"Total documents: {total_docs}")
+        print(f"Already analyzed: {analyzed_docs}")
+        print(f"Failed documents: {failed_docs}")
+        print(f"Remaining to analyze: {remaining_docs}\n")
         
         if remaining_docs == 0:
-            logger.info("No documents remaining to analyze.")
+            print("No documents remaining to analyze.")
             return
-        
-        # Check for existing progress
-        try:
-            with open('analysis_progress.json', 'r') as f:
-                progress = json.load(f)
-                processed = progress.get('processed', 0)
-                remaining = 250 - processed
-                if remaining > 0:
-                    logger.info(f"Resuming from previous run. {remaining} documents remaining.")
-                    successful = process_documents(collection, target_count=remaining)
-                else:
-                    logger.info("Previous run completed all documents.")
-                    return
-        except FileNotFoundError:
-            logger.info("Starting new processing run...")
-            successful = process_documents(collection, target_count=250)
-        
-        logger.info(f"Analysis complete. Successfully analyzed {successful} documents.")
+            
+        # Run the analysis
+        print("Starting analysis process...")
+        analyzer.run()
         
     except Exception as e:
-        logger.error(f"Fatal error: {str(e)}")
+        print(f"\nFatal error occurred: {str(e)}")
     finally:
-        if 'client' in locals():
-            client.close()
-            logger.info("MongoDB connection closed")
+        print("\n=== HDL Code Analysis Complete ===\n")
+
 if __name__ == "__main__":
     main()
