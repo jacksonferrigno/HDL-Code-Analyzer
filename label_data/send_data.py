@@ -2,13 +2,58 @@ import json
 from pymongo import MongoClient
 import os
 from dotenv import load_dotenv
+import re
+import logging
+from datetime import datetime
 
 # Load environment variables
 load_dotenv()
 
+def setup_logger():
+    """Set up logging configuration"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(f'hdl_upload_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
+            logging.StreamHandler()
+        ]
+    )
+    return logging.getLogger(__name__)
+
+def clean_hdl_content(content):
+    """Clean HDL code by removing content before library declaration"""
+    try:
+        # Find the first library declaration
+        library_match = re.search(
+            r'\b(?:library\s+(?:ieee|IEEE|work|std|STD))',
+            content,
+            re.IGNORECASE | re.MULTILINE
+        )
+        
+        if library_match:
+            return content[library_match.start():].strip()
+        
+        # Fallback to entity/architecture if no library found
+        alt_match = re.search(
+            r'\b(?:entity|architecture|package)\s+\w+\s+is',
+            content,
+            re.IGNORECASE | re.MULTILINE
+        )
+        
+        if alt_match:
+            return content[alt_match.start():].strip()
+        
+        return content.strip()
+        
+    except Exception as e:
+        return None
+
 def upload_dataset_to_mongodb():
     # Define file path
-    file_path = r"C:\Users\jackf\Documents\GitHub\back-endAI\label_data\ai-hdlcoder-dataset_part000000000000.json"
+    file_path = r"C:\Users\jackf\Documents\GitHub\back-endAI\label_data\ai-hdlcoder-dataset_part000000000001.json"
+    
+    logger = setup_logger()
     
     try:
         # Get MongoDB connection string from environment variable
@@ -27,29 +72,37 @@ def upload_dataset_to_mongodb():
         collection = db['hdl_codes']
 
         # Read JSONL file line by line
-        documents = []
         with open(file_path, 'r', encoding='utf-8') as file:
             for line in file:
                 try:
                     document = json.loads(line.strip())
-                    documents.append(document)
+                    content = document.get('content', '')
+                    
+                    if content:
+                        # Clean the content
+                        cleaned_content = clean_hdl_content(content)
+                        if cleaned_content:
+                            # Remove unwanted fields
+                            for field in ['repo_name', 'path', 'copies', 'size', 'license', 'labels', 'processing_failed']:
+                                document.pop(field, None)  # Remove field if it exists
+                            document['content'] = cleaned_content
+                            
+                            # Insert cleaned document into MongoDB
+                            collection.insert_one(document)
+                        else:
+                            logger.warning(f"Cleaning failed for document: {document}")
+                    else:
+                        logger.warning("Empty content found in document, skipping.")
                 except json.JSONDecodeError as e:
-                    print(f"Error parsing line: {e}")
+                    logger.error(f"Error parsing line: {e}")
                     continue
 
-        if documents:
-            # Insert all documents in bulk
-            result = collection.insert_many(documents)
-            print(f"Successfully inserted {len(result.inserted_ids)} documents")
-        else:
-            print("No valid documents found to insert")
-
-        print("Dataset upload completed successfully")
+        logger.info("Processing complete. All documents have been cleaned and inserted into MongoDB.")
 
     except FileNotFoundError:
-        print(f"Error: Dataset file not found at {file_path}")
+        logger.error(f"Error: Dataset file not found at {file_path}")
     except Exception as e:
-        print(f"Error: {str(e)}")
+        logger.error(f"Error: {str(e)}")
     finally:
         if 'client' in locals():
             client.close()
