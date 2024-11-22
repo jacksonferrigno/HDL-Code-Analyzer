@@ -16,15 +16,20 @@ class HDLAnalysis:
     MIN_TOKENS = 1000   # Minimum tokens to maintain meaningful analysis
     
     def __init__(self, batch_size: int = 20, target_count: int = 250):
-        """Initialize connections and configurations."""
-        load_dotenv()
-        self.client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-        self.mongo_client = MongoClient(os.getenv('DB_URI'))
-        self.db = self.mongo_client['hdl_database']
-        self.collection = self.db['hdl_codes']
-        self.logger = self._setup_logger()
-        self.batch_size = batch_size
-        self.target_count = target_count
+        """Initialize connections and configurations for the HDL analysis.
+
+        Args:
+            batch_size (int): Number of documents to process in each batch.
+            target_count (int): Total number of documents to analyze.
+        """
+        load_dotenv()  # Load environment variables from .env file
+        self.client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))  # Initialize OpenAI client
+        self.mongo_client = MongoClient(os.getenv('DB_URI'))  # Connect to MongoDB
+        self.db = self.mongo_client['hdl_database']  # Select the database
+        self.collection = self.db['hdl_codes']  # Select the collection
+        self.logger = self._setup_logger()  # Set up logging
+        self.batch_size = batch_size  # Set batch size for processing
+        self.target_count = target_count  # Set target count for documents to analyze
         self.stats = {
             'total_attempts': 0,
             'successful_analyses': 0,
@@ -34,27 +39,41 @@ class HDLAnalysis:
         }
 
     def _setup_logger(self) -> logging.Logger:
-        """Configure logging system."""
+        """Configure the logging system to log messages to both console and file.
+
+        Returns:
+            logging.Logger: Configured logger instance.
+        """
         log_filename = f'hdl_analysis_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
         formatter = logging.Formatter(
             '%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
         )
         
+        # Set up file handler for logging to a file
         file_handler = logging.FileHandler(log_filename)
         file_handler.setFormatter(formatter)
+        
+        # Set up console handler for logging to the console
         console_handler = logging.StreamHandler()
         console_handler.setFormatter(formatter)
         
         logger = logging.getLogger(__name__)
-        logger.setLevel(logging.INFO)
+        logger.setLevel(logging.INFO)  # Set logging level to INFO
         logger.addHandler(file_handler)
         logger.addHandler(console_handler)
         
-        logger.info("Starting new HDL analysis session")
+        logger.info("Starting new HDL analysis session")  # Log session start
         return logger
 
     def _get_system_prompt(self, content_length: int) -> str:
-        """Select appropriate prompt based on content length."""
+        """Select appropriate prompt based on the length of the HDL code.
+
+        Args:
+            content_length (int): Length of the HDL code content.
+
+        Returns:
+            str: The system prompt to be used for the OpenAI API.
+        """
         if content_length > 5000:
             return """Analyze this HDL code and provide a JSON with:
                 - component_type: [StateMachine/Counter/ALU/Package/Interface/Memory/Controller/Decoder/TestBench/Other]
@@ -74,9 +93,17 @@ class HDLAnalysis:
                 - design_constraints, suggested_modifications"""
 
     def _truncate_hdl(self, hdl_code: str) -> str:
-        """Intelligently truncate HDL code to fit token limits."""
+        """Intelligently truncate HDL code to fit token limits.
+
+        Args:
+            hdl_code (str): The HDL code to be truncated.
+
+        Returns:
+            str: The truncated HDL code.
+        """
         sections = re.split(r'(entity|architecture|package)\s+', hdl_code, flags=re.IGNORECASE)
         
+        # If no sections found, return a portion of the code
         if len(sections) <= 1:
             return hdl_code[:self.MAX_TOKENS * 4]
             
@@ -87,6 +114,7 @@ class HDLAnalysis:
         if lib_match:
             truncated += lib_match.group(0) + "\n\n"
         
+        # Iterate through sections to build the truncated code
         for i in range(1, len(sections), 2):
             section_type = sections[i].lower()
             section_content = sections[i + 1] if i + 1 < len(sections) else ""
@@ -108,7 +136,7 @@ class HDLAnalysis:
                     if len(arch_parts) > 1:
                         processes = re.findall(r'process\b.*?end\s+process', 
                                             arch_parts[1], re.IGNORECASE | re.DOTALL)
-                        truncated += "\n".join(processes[:3])
+                        truncated += "\n".join(processes[:3])  # Include first 3 processes
                     truncated += "\nend architecture;\n\n"
             
             elif section_type == 'package':
@@ -118,13 +146,21 @@ class HDLAnalysis:
                     if "end package" not in truncated.lower():
                         truncated += "\nend package;\n\n"
             
+            # Stop if the truncated content exceeds the maximum token limit
             if len(truncated) > self.MAX_TOKENS * 3:
                 break
         
         return truncated
 
     def get_unanalyzed_documents(self, last_id: Optional[str] = None) -> List[Dict]:
-        """Retrieve batch of unanalyzed documents from MongoDB."""
+        """Retrieve a batch of unanalyzed documents from MongoDB.
+
+        Args:
+            last_id (Optional[str]): The last document ID processed for pagination.
+
+        Returns:
+            List[Dict]: A list of documents that have not been analyzed.
+        """
         query = {
             "$or": [
                 {"analysis": {"$exists": False}},
@@ -141,7 +177,16 @@ class HDLAnalysis:
         ).limit(self.batch_size))
 
     def analyze_hdl(self, hdl_code: str, doc_id: str, retry_count: int = 3) -> Optional[Dict[str, Any]]:
-        """Analyze HDL code using OpenAI API with token handling."""
+        """Analyze HDL code using OpenAI API with token handling.
+
+        Args:
+            hdl_code (str): The HDL code to analyze.
+            doc_id (str): The document ID for logging purposes.
+            retry_count (int): Number of attempts to analyze the code.
+
+        Returns:
+            Optional[Dict[str, Any]]: The analysis result as a dictionary or None if failed.
+        """
         if not hdl_code.strip():
             self.logger.error(f"Empty HDL code for document {doc_id}")
             return None
@@ -152,7 +197,7 @@ class HDLAnalysis:
         
         for attempt in range(retry_count):
             try:
-                # Handle large content
+                # Handle large content by truncating if necessary
                 if len(current_content) > self.MAX_TOKENS * 4:
                     self.logger.info(f"Content too large ({len(current_content)} chars), truncating...")
                     current_content = self._truncate_hdl(current_content)
@@ -160,6 +205,7 @@ class HDLAnalysis:
 
                 system_prompt = self._get_system_prompt(len(current_content))
                 
+                # Send the request to OpenAI API
                 response = self.client.chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=[
@@ -170,6 +216,7 @@ class HDLAnalysis:
                     max_tokens=1000
                 )
 
+                # Extract the JSON result from the response
                 result = json.loads(re.search(r'\{.*\}', response.choices[0].message.content, re.DOTALL).group())
                 result.update({
                     'analysis_timestamp': datetime.utcnow().isoformat(),
@@ -182,6 +229,7 @@ class HDLAnalysis:
                 return result
 
             except Exception as e:
+                # Handle specific exceptions and retry logic
                 if 'context_length_exceeded' in str(e):
                     if attempt < retry_count - 1:
                         current_content = self._truncate_hdl(current_content)
@@ -206,7 +254,11 @@ class HDLAnalysis:
                 return None
 
     def process_batch(self) -> None:
-        """Process a batch of documents from MongoDB."""
+        """Process a batch of documents from MongoDB.
+
+        This method retrieves documents that have not been analyzed and processes them
+        by calling the analyze_hdl method. It also handles logging and progress tracking.
+        """
         last_id = None
         
         while self.stats['processed_count'] < self.target_count:
@@ -220,7 +272,7 @@ class HDLAnalysis:
                     doc_id = doc['_id']
                     last_id = doc_id
 
-                    # Check if already analyzed
+                    # Check if the document has already been analyzed
                     if self.collection.find_one({"_id": doc_id, "analysis": {"$exists": True}}):
                         self.logger.info(f"Document {doc_id} already analyzed")
                         self.stats['skipped_documents'] += 1
@@ -230,6 +282,7 @@ class HDLAnalysis:
                     analysis = self.analyze_hdl(doc.get('content', ''), str(doc_id))
 
                     if analysis:
+                        # Update the document with the analysis result
                         self.collection.update_one(
                             {"_id": doc_id},
                             {
@@ -241,6 +294,7 @@ class HDLAnalysis:
                         )
                         self.logger.info(f"Successfully analyzed document {doc_id}")
                     else:
+                        # Mark the document as failed if analysis was not successful
                         self.collection.update_one(
                             {"_id": doc_id},
                             {"$set": {"processing_failed": True}}
@@ -249,12 +303,12 @@ class HDLAnalysis:
 
                     self.stats['processed_count'] += 1
                     
-                    # Save progress
+                    # Save progress every 10 documents
                     if self.stats['processed_count'] % 10 == 0:
                         self._save_progress(last_id)
                         self.log_stats()
 
-                    # Rate limiting
+                    # Rate limiting: take a break every 50 documents
                     if self.stats['processed_count'] % 50 == 0:
                         self.logger.info("Taking a break to avoid rate limits...")
                         sleep(10)
@@ -267,7 +321,11 @@ class HDLAnalysis:
                 sleep(5)
 
     def _save_progress(self, last_id: str) -> None:
-        """Save current progress to file."""
+        """Save current progress to a JSON file.
+
+        Args:
+            last_id (str): The last document ID processed.
+        """
         progress = {
             **self.stats,
             "last_id": str(last_id),
@@ -277,15 +335,19 @@ class HDLAnalysis:
             json.dump(progress, f, indent=2)
 
     def log_stats(self) -> None:
-        """Log current statistics."""
+        """Log current statistics of the analysis process."""
         self.logger.info("Current Statistics:")
         for key, value in self.stats.items():
             self.logger.info(f"{key.replace('_', ' ').title()}: {value}")
 
     def run(self) -> None:
-        """Main execution method."""
+        """Main execution method to start the analysis process.
+
+        This method loads existing progress, processes batches of documents,
+        and logs the results.
+        """
         try:
-            # Load existing progress
+            # Load existing progress from file
             try:
                 with open('analysis_progress.json', 'r') as f:
                     progress = json.load(f)
@@ -300,30 +362,34 @@ class HDLAnalysis:
             except FileNotFoundError:
                 self.logger.info("Starting new processing run...")
 
-            self.process_batch()
-            self.log_stats()
+            self.process_batch()  # Start processing documents
+            self.log_stats()  # Log final statistics
             
         except Exception as e:
             self.logger.error(f"Fatal error: {str(e)}")
         finally:
-            self.close()
+            self.close()  # Ensure resources are cleaned up
 
     def close(self) -> None:
-        """Cleanup and close connections."""
+        """Cleanup and close connections to MongoDB."""
         if self.mongo_client:
             self.mongo_client.close()
             self.logger.info("MongoDB connection closed")
         self.logger.info("HDL Analysis session completed")
 
 def main():
-    """Main execution function for HDL Analysis."""
+    """Main execution function for HDL Analysis.
+
+    This function initializes the HDLAnalysis class and starts the analysis process.
+    It also prints the initial status of the MongoDB database.
+    """
     try:
         print("\n=== Starting HDL Code Analysis System ===\n")
         
-        # Initialize the analyzer
+        # Initialize the analyzer with specified batch size and target count
         analyzer = HDLAnalysis(
             batch_size=20,     # Process 20 documents at a time
-            target_count=250   # Process total of 250 documents
+            target_count=250   # Process a total of 250 documents
         )
         
         # Print initial MongoDB status
