@@ -2,3 +2,7 @@ pymongo
 python-dotenv
 openai
 tqdm
+transformers
+torch
+scikit-learn
+pandas

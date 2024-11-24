@@ -185,7 +185,7 @@ class HDLAnalysis:
             retry_count (int): Number of attempts to analyze the code.
 
         Returns:
-            Optional[Dict[str, Any]]: The analysis result as a dictionary or None if failed.
+            Optional[Dict[str, Any]]: The analysis  nm,as a dictionary or None if failed.
         """
         if not hdl_code.strip():
             self.logger.error(f"Empty HDL code for document {doc_id}")
