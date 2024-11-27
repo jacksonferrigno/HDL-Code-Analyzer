@@ -16,73 +16,68 @@ class EnhancedMultilabelTrainer(Trainer):
         self.threshold = kwargs.pop('threshold', 0.5)
         super().__init__(*args, **kwargs)
 
+    ######################################################
+    ######################################################
+    ######################################################
+
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        """Compute the training loss."""
-        try:
-            labels = inputs.pop("labels")
-            outputs = model(**inputs)
-            logits = outputs.logits
-            
-            # Apply label smoothing
-            if labels is not None:
-                labels = labels.float() * 0.9 + 0.05
-            
-            # Weighted Focal Loss implementation
-            if self.label_weights is not None:
-                weights = torch.tensor(self.label_weights).to(logits.device)
-            else:
-                pos_weight = self.calculate_class_weights(labels)
-                weights = pos_weight.to(logits.device)
-            
-            # Compute base BCE loss
-            bce_loss = F.binary_cross_entropy_with_logits(
-                logits.view(-1, self.model.config.num_labels),
-                labels.float().view(-1, self.model.config.num_labels),
-                pos_weight=weights,
-                reduction='none'
-            )
-            
-            # Apply Focal Loss modulation
-            pt = torch.exp(-bce_loss)
-            focal_loss = ((1 - pt) ** self.focal_loss_gamma) * bce_loss
-            
-            # Add L1 regularization for sparsity
-            l1_lambda = 0.01
-            l1_reg = sum(p.abs().sum() for p in model.parameters())
-            
-            loss = focal_loss.mean() + l1_lambda * l1_reg
-            
-            return (loss, outputs) if return_outputs else loss
-            
-        except Exception as e:
-            print(f"Error in compute_loss: {str(e)}")
-            raise
+            """Simple and stable loss computation for multi-label classification."""
+            try:
+                labels = inputs.pop("labels")
+                outputs = model(**inputs)
+                logits = outputs.logits
+                
+                # Basic binary cross entropy loss
+                loss = F.binary_cross_entropy_with_logits(
+                    logits.view(-1, self.model.config.num_labels),
+                    labels.float().view(-1, self.model.config.num_labels),
+                    reduction='mean'
+                )
+                
+                # Minimal L1 regularization
+                l1_lambda = 0.0001
+                l1_reg = l1_lambda * sum(p.abs().sum() for p in model.parameters())
+                
+                total_loss = loss + l1_reg
+                
+                # Numerical stability check
+                if torch.isnan(total_loss) or torch.isinf(total_loss):
+                    print("Warning: Loss instability detected, using base loss")
+                    return (loss, outputs) if return_outputs else loss
+                
+                return (total_loss, outputs) if return_outputs else total_loss
+                
+            except Exception as e:
+                print(f"Error in compute_loss: {str(e)}")
+                raise
+
+    ######################################################
+    ######################################################
+    ######################################################
 
     def training_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]], 
                      num_items_in_batch: Optional[int] = None) -> torch.Tensor:
-        """
-        Perform a training step on a batch of inputs.
-
-        Args:
-            model: The model to train
-            inputs: Dict of input tensors
-            num_items_in_batch: Number of items in current batch 
-
-        Returns:
-            torch.Tensor: The training loss
-        """
+        """Training step with gradient clipping."""
         model.train()
         inputs = self._prepare_inputs(inputs)
 
         with self.compute_loss_context_manager():
             loss = self.compute_loss(model, inputs)
 
-        if self.args.gradient_accumulation_steps > 1 and (num_items_in_batch is not None):
+        if self.args.gradient_accumulation_steps > 1:
             loss = loss / self.args.gradient_accumulation_steps
 
         self.accelerator.backward(loss)
+        
+        # Add gradient clipping
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
         return loss.detach()
+
+
+    ######################################################
+    ######################################################
+    ######################################################
 
     def prediction_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]], 
                        prediction_loss_only: bool, ignore_keys: Optional[List[str]] = None) -> Tuple[Optional[torch.Tensor], ...]:
@@ -111,12 +106,20 @@ class EnhancedMultilabelTrainer(Trainer):
 
             return (loss, probs, labels)
 
+    ######################################################
+    ######################################################
+    ######################################################
+
     def calculate_class_weights(self, labels: torch.Tensor) -> torch.Tensor:
         """Calculate class weights based on label distribution."""
         pos_counts = torch.sum(labels, dim=0)
         neg_counts = labels.size(0) - pos_counts
         pos_weight = neg_counts / torch.clamp(pos_counts, min=1)
         return pos_weight
+
+    ######################################################
+    ######################################################
+    ######################################################
 
     def compute_metrics(self, eval_pred: Tuple[np.ndarray, np.ndarray]) -> Dict[str, float]:
         """Compute evaluation metrics."""
@@ -140,12 +143,7 @@ class EnhancedMultilabelTrainer(Trainer):
             )
             
             # ROC AUC scores
-            try:
-                metrics['macro_auc'] = roc_auc_score(labels, sigmoid_preds, average='macro')
-                metrics['micro_auc'] = roc_auc_score(labels, sigmoid_preds, average='micro')
-            except ValueError:
-                metrics['macro_auc'] = 0.0
-                metrics['micro_auc'] = 0.0
+            metrics['macro_auc'], metrics['micro_auc'] = self._calculate_auc(labels, sigmoid_preds)
             
             metrics['exact_match'] = (binary_preds == labels).all(axis=1).mean()
             metrics['hamming_loss'] = (binary_preds != labels).mean()
@@ -161,6 +159,24 @@ class EnhancedMultilabelTrainer(Trainer):
             }
             
         return metrics
+
+    ######################################################
+    ######################################################
+    ######################################################
+
+    def _calculate_auc(self, labels, sigmoid_preds):
+        """Calculate ROC AUC scores."""
+        try:
+            macro_auc = roc_auc_score(labels, sigmoid_preds, average='macro')
+            micro_auc = roc_auc_score(labels, sigmoid_preds, average='micro')
+        except ValueError:
+            macro_auc = 0.0
+            micro_auc = 0.0
+        return macro_auc, micro_auc
+
+    ######################################################
+    ######################################################
+    ######################################################
 
 def create_enhanced_model(model_name: str, num_labels: int) -> AutoModelForSequenceClassification:
     """Create an enhanced model with improved architecture for multi-label classification."""
@@ -186,15 +202,6 @@ def create_enhanced_model(model_name: str, num_labels: int) -> AutoModelForSeque
         setattr(model, 'label_correlations', correlation_matrix)
         
         # Initialize weights with improved scheme
-        def init_weights(module):
-            if isinstance(module, (nn.Linear, nn.Embedding)):
-                module.weight.data.normal_(mean=0.0, std=0.02)
-            elif isinstance(module, nn.LayerNorm):
-                module.bias.data.zero_()
-                module.weight.data.fill_(1.0)
-            if isinstance(module, nn.Linear) and module.bias is not None:
-                module.bias.data.zero_()
-        
         model.apply(init_weights)
         
         return model
@@ -202,3 +209,17 @@ def create_enhanced_model(model_name: str, num_labels: int) -> AutoModelForSeque
     except Exception as e:
         print(f"Error in create_enhanced_model: {str(e)}")
         raise
+
+    ######################################################
+    ######################################################
+    ######################################################
+
+def init_weights(module):
+    """Initialize weights for the model."""
+    if isinstance(module, (nn.Linear, nn.Embedding)):
+        module.weight.data.normal_(mean=0.0, std=0.02)
+    elif isinstance(module, nn.LayerNorm):
+        module.bias.data.zero_()
+        module.weight.data.fill_(1.0)
+    if isinstance(module, nn.Linear) and module.bias is not None:
+        module.bias.data.zero_()
