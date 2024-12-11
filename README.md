@@ -30,7 +30,3 @@ This project provides tools for:
 - Provides confidence scores for predictions
 - Supports batch evaluation
 - Reference: [test.py, lines 12-40]
-
-## Setup
-
-1. Install dependencies:
