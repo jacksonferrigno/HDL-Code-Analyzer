@@ -1,0 +1,454 @@
+[
+  {
+    "id": "673c0978d7f592ffc3e19225",
+    "predictions": [
+      "Including an external dependency library",
+      "Including an external dependency",
+      "Importing an external dependency",
+      "Importing an external dependency",
+      "Importing an external dependency",
+      "Sequential logic with conditional statements",
+      "Modular design"
+    ],
+    "actual_features": [
+      "Including an external dependency from the IEEE library for unsigned logic operations.",
+      "Including the IEEE standard logic arithmetic package",
+      "Importing an external dependency",
+      "Importing an external dependency",
+      "Importing external dependency",
+      "Sequential logic with conditional statements",
+      "Modular design with generic parameters."
+    ],
+    "details": [
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Including an external dependency library",
+        "content": "use IEEE.STD_LOGIC_UNSIGNED.all;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Including an external dependency",
+        "content": "use IEEE.STD_LOGIC_ARITH.all;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Importing an external dependency",
+        "content": "use work.HelperFunctions.all;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Importing an external dependency",
+        "content": "use work.HelperFunctions_Unsigned.all;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Importing an external dependency",
+        "content": "use work.HelperFunctions_Signed.all;"
+      },
+      {
+        "type": "process",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Sequential logic with conditional statements",
+        "content": "PROCESSING, S_PROCESSING_LAST) ; signal state : state_STATE_TYPE ; signal cur_address : STD_LOGIC_VE..."
+      },
+      {
+        "type": "component",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Modular design",
+        "content": "component MicroFifo is generic ( ADDRESS_WIDTH : POSITIVE; DATA_WIDTH : POSITIVE; ALMOST_FULL_COUNT ..."
+      }
+    ]
+  },
+  {
+    "id": "673c0978d7f592ffc3e19260",
+    "predictions": [
+      "Including an external library/module named IEEE.",
+      "Including an external dependency library",
+      "Including an external dependency library",
+      "Including an external dependency library"
+    ],
+    "actual_features": [
+      "Including the IEEE library",
+      "Including an external dependency",
+      "Including an external dependency for arithmetic operations in VHDL.",
+      "Including an external dependency for handling unsigned logic in VHDL."
+    ],
+    "details": [
+      {
+        "type": "library",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Including an external library/module named IEEE.",
+        "content": "library IEEE;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Including an external dependency library",
+        "content": "use IEEE.STD_LOGIC_1164.ALL;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Including an external dependency library",
+        "content": "use IEEE.STD_LOGIC_ARITH.ALL;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Including an external dependency library",
+        "content": "use IEEE.STD_LOGIC_UNSIGNED.ALL;"
+      }
+    ]
+  },
+  {
+    "id": "673c0978d7f592ffc3e19399",
+    "predictions": [
+      "Including an external library/module named IEEE.",
+      "External dependency",
+      "Including an external dependency",
+      "Including an external dependency",
+      "Importing an external dependency",
+      "Importing an external dependency",
+      "Modular design",
+      "Sequential logic"
+    ],
+    "actual_features": [
+      "Including an external dependency (IEEE library).",
+      "External dependency",
+      "Including the IEEE standard logic library",
+      "Importing an external dependency",
+      "Importing an external dependency",
+      "Importing external dependencies",
+      "Clock generation functionality",
+      "Sequential logic"
+    ],
+    "details": [
+      {
+        "type": "library",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Including an external library/module named IEEE.",
+        "content": "library IEEE;"
+      },
+      {
+        "type": "library",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "External dependency",
+        "content": "library UNISIM;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Including an external dependency",
+        "content": "use IEEE.std_logic_1164.all;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Including an external dependency",
+        "content": "use IEEE.std_logic_unsigned.all;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Importing an external dependency",
+        "content": "use ieee.numeric_std.all;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Importing an external dependency",
+        "content": "use UNISIM.VCOMPONENTS.all;"
+      },
+      {
+        "type": "entity",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Modular design",
+        "content": "entity clkgen is port ( clkin: in std_logic; rstin: in std_logic; clkout: out std_logic; clkout_1mhz..."
+      },
+      {
+        "type": "process",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Sequential logic",
+        "content": "process(dcmlocked, dcmlocked_1mhz, clkout_i, rstin) begin if dcmlocked='0' or dcmlocked_1mhz='0' or ..."
+      }
+    ]
+  },
+  {
+    "id": "673c0978d7f592ffc3e19398",
+    "predictions": [
+      "Including an external library/module named IEEE.",
+      "External dependency",
+      "Including an external dependency",
+      "Including an external dependency",
+      "Importing an external dependency",
+      "Importing an external dependency",
+      "Modular design",
+      "Sequential logic"
+    ],
+    "actual_features": [
+      "Including an external dependency (IEEE library).",
+      "External dependency",
+      "Including an external dependency",
+      "Including an external dependency for handling unsigned logic in VHDL.",
+      "Including an external dependency library/module.",
+      "Importing external dependencies",
+      "Clock generation for various signals.",
+      "Sequential logic"
+    ],
+    "details": [
+      {
+        "type": "library",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Including an external library/module named IEEE.",
+        "content": "library IEEE;"
+      },
+      {
+        "type": "library",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "External dependency",
+        "content": "library UNISIM;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Including an external dependency",
+        "content": "use IEEE.std_logic_1164.all;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Including an external dependency",
+        "content": "use IEEE.std_logic_unsigned.all;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Importing an external dependency",
+        "content": "use ieee.numeric_std.all;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Importing an external dependency",
+        "content": "use UNISIM.VCOMPONENTS.all;"
+      },
+      {
+        "type": "entity",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Modular design",
+        "content": "entity clkgen is port ( clkin: in std_logic; rstin: in std_logic; clkout: out std_logic; clkout_1mhz..."
+      },
+      {
+        "type": "process",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Sequential logic",
+        "content": "process(dcmlocked, dcmlocked_1mhz, clkout_i, rstin) begin if dcmlocked='0' or dcmlocked_1mhz='0' or ..."
+      }
+    ]
+  },
+  {
+    "id": "673c0978d7f592ffc3e192a2",
+    "predictions": [
+      "Including an external dependency",
+      "External dependency",
+      "Importing an external dependency",
+      "Importing an external dependency",
+      "Importing an external dependency",
+      "Importing an external dependency",
+      "Importing an external dependency",
+      "Importing an external dependency",
+      "Importing an external dependency",
+      "Sequential logic with conditional statements"
+    ],
+    "actual_features": [
+      "Including an external dependency",
+      "External dependency",
+      "Importing an external dependency",
+      "Importing an external dependency",
+      "Importing an external dependency",
+      "Importing external dependencies",
+      "Importing an external dependency",
+      "Importing all common data types from a package",
+      "Importing external dependencies",
+      "Permutation validation and generation functions"
+    ],
+    "details": [
+      {
+        "type": "library",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Including an external dependency",
+        "content": "library ieee;"
+      },
+      {
+        "type": "library",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "External dependency",
+        "content": "library work;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Importing an external dependency",
+        "content": "use ieee.math_real.all;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Importing an external dependency",
+        "content": "use ieee.std_logic_1164.all;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Importing an external dependency",
+        "content": "use ieee.numeric_std.all;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Importing an external dependency",
+        "content": "use work.fixed_float_types.all;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Importing an external dependency",
+        "content": "use work.fixed_generic_pkg.all;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Importing an external dependency",
+        "content": "use work.common_data_types_pkg.all;"
+      },
+      {
+        "type": "use",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Importing an external dependency",
+        "content": "use work.common_pkg.all;"
+      },
+      {
+        "type": "package",
+        "lines": [
+          1,
+          1
+        ],
+        "prediction": "Sequential logic with conditional statements",
+        "content": "package permutation_pkg is function permutation_checks( input_length : integer; input_indexes : inte..."
+      }
+    ]
+  }
+]
