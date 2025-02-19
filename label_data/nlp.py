@@ -14,16 +14,10 @@ from transformers import (
     EarlyStoppingCallback,
     AutoConfig  # Important for HF model saving
 )
-import torch
-from torch.utils.data import Dataset
 import os
 from dotenv import load_dotenv
-from datetime import datetime
-from typing import Dict, List, Tuple, Optional, Union
 import json
 import traceback
-from collections import Counter
-from tqdm import tqdm
 
 from utils.vhdl_segmenter import VHDLSegmenter
 from utils.model_logger import ModelLogger
@@ -62,129 +56,11 @@ class HDLSegmentTrainer:
         self.pattern_mapping = {}  # For design patterns
         self.component_mapping = {}  # For component types
 
-
-    def load_pattern_data(self) -> Tuple[List[str], List[int]]:
-        """Load full-code design pattern data from MongoDB."""
-        texts, labels = [], []
-        
-        # Get all analyzed documents
-        cursor = self.collection.find({"analysis": {"$exists": True}})
-        unique_patterns = set()
-        
-        # First pass: collect unique patterns
-        for doc in tqdm(cursor, desc="Collecting patterns"):
-            pattern = doc.get('analysis', {}).get('design_pattern')
-            if pattern:
-                unique_patterns.add(str(pattern))
-        
-        # Create pattern mapping
-        self.pattern_mapping = {
-            pattern: idx for idx, pattern in enumerate(sorted(unique_patterns))
-        }
-        
-        # Second pass: collect full code samples and their patterns
-        cursor.rewind()
-        for doc in tqdm(cursor, desc="Processing documents"):
-            content = doc.get('content')
-            pattern = doc.get('analysis', {}).get('design_pattern')
-            if content and pattern and pattern in self.pattern_mapping:
-                texts.append(content)
-                labels.append(self.pattern_mapping[pattern])
-        
-        print(f"\nCollected {len(texts)} samples with {len(unique_patterns)} unique patterns")
-        return texts, labels
-
-    def load_segment_data(self) -> Tuple[List[str], List[int], List[str]]:
-        """Load pre-labeled segment data using VHDLSegmenter."""
-        texts = []
-        labels = []
-        segment_types = []
-        feature_counts = Counter()
-        
-        MIN_SAMPLES = 10
-        MAX_SAMPLES = 200
-        
-        cursor = self.collection.find({"analysis": {"$exists": True}})
-        
-        # First pass: count features
-        print("Analyzing feature distribution...")
-        for doc in cursor:
-            features = doc.get('analysis', {}).get('key_features', [])
-            for feature in features:
-                if isinstance(feature, dict) and feature.get('key_feature'):
-                    feature_counts[feature['key_feature']] += 1
-        
-        # Filter and print feature distribution
-        common_features = {
-            feature: count for feature, count in feature_counts.items() 
-            if count >= MIN_SAMPLES
-        }
-        
-        print("\nFeature distribution before capping:")
-        for feature, count in sorted(common_features.items(), key=lambda x: x[1], reverse=True):
-            print(f"{feature}: {count} samples")
-        
-        # Create mapping
-        self.feature_mapping = {feature: idx for idx, feature 
-                              in enumerate(sorted(common_features.keys()))}
-        
-        # Track samples with better organization
-        feature_samples = {feature: {
-            'count': 0,
-            'segments': []
-        } for feature in self.feature_mapping}
-        
-        # Second pass: collect all valid segments first
-        cursor.rewind()
-        print("\nCollecting segments...")
-        for doc in tqdm(cursor):
-            content = doc.get('content')
-            if not content:
-                continue
-
-            segments = self.segmenter.segment_code(content)
-            segment_by_type = {seg.segment_type: seg for seg in segments if seg.segment_type}
-
-            features = doc.get('analysis', {}).get('key_features', [])
-            for feature in features:
-                if not isinstance(feature, dict):
-                    continue
-                    
-                key_feature = feature.get('key_feature')
-                seg_type = feature.get('segment_type')
-                
-                if key_feature in self.feature_mapping and seg_type in segment_by_type:
-                    segment = segment_by_type[seg_type]
-                    feature_samples[key_feature]['segments'].append({
-                        'content': segment.content,
-                        'type': seg_type
-                    })
-
-        # Balance and add samples
-        print("\nBalancing dataset...")
-        for feature, data in feature_samples.items():
-            # Randomly shuffle segments for this feature
-            segments = data['segments']
-            np.random.shuffle(segments)
-            
-            # Take up to MAX_SAMPLES
-            for segment in segments[:MAX_SAMPLES]:
-                texts.append(segment['content'])
-                labels.append(self.feature_mapping[feature])
-                segment_types.append(segment['type'])
-                data['count'] += 1
-
-        print("\nFinal feature distribution:")
-        for feature, data in sorted(feature_samples.items(), key=lambda x: x[1]['count'], reverse=True):
-            print(f"{feature}: {data['count']} samples (original: {len(data['segments'])})")
-
-        return texts, labels, segment_types
-
     def train_model(self, model_type: str, output_dir: str = "hdl_models"):
         """Train model on common HDL code features."""
         try:
             # Use existing data loading
-            texts, labels, segment_types = self.load_segment_data()
+            texts, labels, segment_types = self.db_handler.load_segment_data()
             num_labels = len(self.feature_mapping)
             print(f"\nStarting training for {num_labels} common features")
             
